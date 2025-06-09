@@ -53,6 +53,7 @@ __all__ = (
     "SCDown",
     "TorchVision",
     "SWBlock",
+    "PoolConv",
 )
 
 
@@ -468,6 +469,31 @@ class GhostBottleneck(nn.Module):
         return self.conv(x) + self.shortcut(x)
 
 
+class PoolConv(nn.Module):
+    """Depthwise convolution with pooling."""
+
+    def __init__(self, c1: int, c2: int, e: float = 2.0):
+        """
+        Initialize a depthwise convolution with pooling.
+
+        Args:
+            c1 (int): Input channels.
+            c2 (int): Output channels.
+            e (float): Expansion ratio.
+        """
+        super().__init__()
+        n = 5
+        self.c = int(c2 * e)  # hidden channels
+        self.pool = DWConv(c1, self.c, 3, 2)
+        self.cv1 = nn.Sequential(*(Bottleneckv2(self.c, self.c, True, k=[3], e=1.0) for _ in range(n)))
+        self.cv2 = Conv(self.c, c2, 1, 1)  # optional act=FReLU(c2)
+        self.up = nn.Upsample(scale_factor=2, mode="nearest")  # upsample
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through the depthwise convolution and pooling."""
+        return self.up(self.cv2(self.pool(self.cv1(x)))) + x
+
+
 class Bottleneck(nn.Module):
     """Standard bottleneck."""
 
@@ -496,6 +522,13 @@ class Bottleneck(nn.Module):
         return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
 
 
+def gcd(a: int, b: int) -> int:
+    """Calculate the greatest common divisor of two integers."""
+    while b:
+        a, b = b, a % b
+    return a
+
+
 class Bottleneckv2(nn.Module):
     """Standard bottleneck."""
 
@@ -514,12 +547,40 @@ class Bottleneckv2(nn.Module):
         super().__init__()
         c_ = int(c2 * e)  # hidden channels
         self.cv1 = Conv(c1, c_, 1, 1)
-        self.cv2 = Conv(c_, c2, k[0], 1, g=c2)
+        self.cv2 = Conv(c_, c2, k[0], 1, g=gcd(c_, c2))
         self.add = shortcut and c1 == c2
 
     def forward(self, x):
         """Apply bottleneck with optional shortcut connection."""
         return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
+
+
+class SKFusionv2(nn.Module):
+    def __init__(self, height=2, kernel_size=9):
+        super(SKFusionv2, self).__init__()
+
+        self.height = height
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.mlp = nn.Conv1d(1, self.height, kernel_size, 1, kernel_size // 2)
+
+        self.softmax = nn.Softmax(dim=1)
+
+    def forward(self, in_feats):
+        B, C, H, W = in_feats[0].shape
+
+        in_feats = torch.cat(in_feats, dim=1)
+        in_feats = in_feats.view(B, self.height, C, H, W)
+
+        feats_sum = torch.sum(in_feats, dim=1)
+        attn = self.avg_pool(feats_sum)
+        attn = attn.squeeze(-1).permute(0, 2, 1)
+        attn = self.mlp(attn)
+        attn = attn.permute(0, 2, 1)
+        attn = self.softmax(attn.view(B, self.height, C, 1, 1))
+
+        out = torch.sum(in_feats * attn, dim=1)
+        return out
 
 
 class SWBlock(nn.Module):
@@ -536,17 +597,31 @@ class SWBlock(nn.Module):
             e (float): Expansion ratio.
         """
         super().__init__()
-        n = 5
+        n = 4
+        self.res = c1 == c2
         self.c = int(c2 * e)  # hidden channels
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
-        self.cv2 = Conv((2 + n) * self.c, c2, 1)  # optional act=FReLU(c2)
+        # self.cv2 = Conv((2 + n) * self.c, c2, 1)  # optional act=FReLU(c2)
+        self.cv2 = Conv(self.c, c2, 1)
         self.m = nn.ModuleList(Bottleneckv2(self.c, self.c, shortcut, k=[3], e=2.0) for _ in range(n))
 
     def forward(self, x):
         """Forward pass through C2f layer."""
         y = list(self.cv1(x).chunk(2, 1))
         y.extend(m(y[-1]) for m in self.m)
-        return self.cv2(torch.cat(y, 1))
+        # if (
+        #     x[0, :, x.shape[-1] // 2, x.shape[-2] // 2].mean()
+        #     != x[0, :, x.shape[-1] // 2 + 1, x.shape[-2] // 2 + 1].mean()
+        # ):
+        #     import os
+
+        #     _ = len(os.listdir("./FeatureMap1/")) // 8
+        #     torch.save(x, f"./FeatureMap1/{_}_x.pt")
+        #     torch.save(self.cv2(torch.cat(y, 1)), f"./FeatureMap1/{_}_y.pt")
+        #     for i in range(len(y)):
+        #         torch.save(y[i], f"./FeatureMap1/{_}_{i}.pt")
+        # return self.cv2(torch.cat(y, 1))
+        return self.cv2(torch.sum(y, dim=0))
 
     def forward_split(self, x):
         """Forward pass using split() instead of chunk()."""

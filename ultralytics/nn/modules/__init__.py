@@ -60,6 +60,7 @@ from .block import (
     SCDown,
     TorchVision,
     SWBlock,
+    PoolConv,
 )
 from .conv import (
     CBAM,
@@ -181,4 +182,5 @@ __all__ = (
     "Index",
     "A2C2f",
     "SWBlock",
+    "PoolConv",
 )
