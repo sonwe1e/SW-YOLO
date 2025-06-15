@@ -3,6 +3,7 @@
 
 from typing import List, Optional, Tuple
 
+from more_itertools import last
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -601,27 +602,29 @@ class SWBlock(nn.Module):
         self.res = c1 == c2
         self.c = int(c2 * e)  # hidden channels
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
-        # self.cv2 = Conv((2 + n) * self.c, c2, 1)  # optional act=FReLU(c2)
-        self.cv2 = Conv(self.c, c2, 1)
-        self.m = nn.ModuleList(Bottleneckv2(self.c, self.c, shortcut, k=[3], e=2.0) for _ in range(n))
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)  # optional act=FReLU(c2)
+        self.m = nn.ModuleList(Bottleneckv2(self.c, self.c, shortcut=False, k=[3], e=2.0) for _ in range(n))
+        self.k = nn.parameter.Parameter(torch.tensor([0.6, 0.35, 0.35, 0.6]), requires_grad=True)
 
     def forward(self, x):
         """Forward pass through C2f layer."""
         y = list(self.cv1(x).chunk(2, 1))
-        y.extend(m(y[-1]) for m in self.m)
+
+        y.extend(k * m(y[-1]) for k, m in zip(self.k, self.m))
+
         # if (
         #     x[0, :, x.shape[-1] // 2, x.shape[-2] // 2].mean()
         #     != x[0, :, x.shape[-1] // 2 + 1, x.shape[-2] // 2 + 1].mean()
-        # ):
+        # ) and not self.training:
         #     import os
 
+        #     os.makedirs("./FeatureMap1/", exist_ok=True)
         #     _ = len(os.listdir("./FeatureMap1/")) // 8
         #     torch.save(x, f"./FeatureMap1/{_}_x.pt")
         #     torch.save(self.cv2(torch.cat(y, 1)), f"./FeatureMap1/{_}_y.pt")
         #     for i in range(len(y)):
         #         torch.save(y[i], f"./FeatureMap1/{_}_{i}.pt")
-        # return self.cv2(torch.cat(y, 1))
-        return self.cv2(torch.sum(y, dim=0))
+        return self.cv2(torch.cat(y, 1))
 
     def forward_split(self, x):
         """Forward pass using split() instead of chunk()."""

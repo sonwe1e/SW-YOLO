@@ -6,19 +6,19 @@ scales: # model compound scaling constants, i.e. 'model=yolov10n.yaml' will call
 
 backbone:
   # [from, repeats, module, args]
-  - [-1, 1, Conv, [512, 3, 2]] # 0-P1/2
+  - [-1, 1, Conv, [512, 3, 2]] # 0-x2
   - [-1, 1, DWConv, [512, 3, 1]]
   - [-1, 1, Conv, [256, 1, 1]]
   - [-1, 1, DWConv, [256, 3, 1]]
   - [-1, 1, Conv, [256, 1, 1]]
 
-  - [-1, 1, DWConv, [256, 3, 2]] # 5-P2/4
+  - [-1, 1, DWConv, [256, 3, 2]] # 5-x4
   - [-1, 1, SWBlock, [256]]
 
-  - [-1, 1, DWConv, [256, 3, 2]] # 7-P3/8
+  - [-1, 1, DWConv, [256, 3, 2]] # 7-x8
   - [-1, 1, SWBlock, [256]]
 
-  - [-1, 1, DWConv, [256, 3, 2]] # 9-P4/16
+  - [-1, 1, DWConv, [256, 3, 2]] # 9-x16
   - [-1, 1, SWBlock, [512]]
   - [-1, 1, SWBlock, [512]]
 
@@ -26,10 +26,10 @@ backbone:
 head:
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
   - [[-1, 8], 1, Concat, [1]] # cat backbone P3
-  - [-1, 1, SWBlock, [256]] # 13 (P3/8-small)
+  - [-1, 1, SWBlock, [256]] # 14 (x8-small)
 
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
   - [[-1, 6], 1, Concat, [1]] # cat backbone P2
-  - [-1, 1, SWBlock, [256]] # 16 (P2/4-xsmall)
+  - [-1, 1, SWBlock, [256]] # 17 (x4-xsmall)
 
-  - [[14, 17], 1, Detect, [nc]] # Detect(P2, P3, P4)
+  - [[14, 17], 1, SWDetect, [nc]] # Detect(P2, P3, P4)

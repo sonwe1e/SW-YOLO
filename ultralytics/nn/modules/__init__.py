@@ -90,6 +90,7 @@ from .head import (
     YOLOEDetect,
     YOLOESegment,
     v10Detect,
+    SWDetect,
 )
 from .transformer import (
     AIFI,
@@ -183,4 +184,5 @@ __all__ = (
     "A2C2f",
     "SWBlock",
     "PoolConv",
+    "SWDetect",
 )

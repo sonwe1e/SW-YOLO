@@ -5,8 +5,10 @@ import math
 from typing import List
 
 import numpy as np
+from sympy import im
 import torch
 import torch.nn as nn
+from timm.layers.norm import LayerNorm2d
 
 __all__ = (
     "Conv",
@@ -43,10 +45,8 @@ class Conv(nn.Module):
         conv (nn.Conv2d): Convolutional layer.
         bn (nn.BatchNorm2d): Batch normalization layer.
         act (nn.Module): Activation function layer.
-        default_act (nn.Module): Default activation function (SiLU).
+        default_act (nn.Module): Default activation function.
     """
-
-    default_act = nn.SiLU()  # default activation
 
     def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True):
         """
@@ -64,8 +64,11 @@ class Conv(nn.Module):
         """
         super().__init__()
         self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-        self.bn = nn.BatchNorm2d(c2)
-        self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
+        if g == 1:
+            self.bn = nn.BatchNorm2d(c2)
+        else:
+            self.ln = LayerNorm2d(c2)  # use DynamicTanh for groups > 1
+        self.act = nn.SiLU() if act is True else nn.Identity()  # default activation function
 
     def forward(self, x):
         """
@@ -77,7 +80,12 @@ class Conv(nn.Module):
         Returns:
             (torch.Tensor): Output tensor.
         """
-        return self.act(self.bn(self.conv(x)))
+        if hasattr(self, "bn"):
+            return self.act(self.bn(self.conv(x)))
+        elif hasattr(self, "ln"):
+            return self.act(self.ln(self.conv(x)))
+        else:
+            return self.act(self.conv(x))
 
     def forward_fuse(self, x):
         """
