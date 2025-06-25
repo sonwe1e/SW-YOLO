@@ -2,7 +2,7 @@
 nc: 80 # number of classes
 scales: # model compound scaling constants, i.e. 'model=yolov10n.yaml' will call yolov10.yaml with scale 'n'
   # [depth, width, max_channels]
-  s: [1.00, 0.25, 768] # summary: 208 layers, 832548 parameters, 15.8 GFLOPs
+  s: [1.00, 0.125, 768] # summary: 208 layers, 832548 parameters, 15.8 GFLOPs
 
 backbone:
   # [from, repeats, module, args]
@@ -13,23 +13,23 @@ backbone:
   - [-1, 1, Conv, [256, 1, 1]]
 
   - [-1, 1, DWConv, [256, 3, 2]] # 5-x4
-  - [-1, 1, SWBlock_spatial_attention, [256]]
+  - [-1, 1, SWBlock, [256]]
 
   - [-1, 1, DWConv, [256, 3, 2]] # 7-x8
-  - [-1, 1, SWBlock_spatial_attention, [256]]
+  - [-1, 1, SWBlock, [256]]
 
   - [-1, 1, DWConv, [256, 3, 2]] # 9-x16
-  - [-1, 1, SWBlock_channel_attention, [256]]
-  - [-1, 1, SWBlock_channel_attention, [256]]
+  - [-1, 1, SWBlock, [256]]
+  # - [-1, 1, SWBlock, [512]]
 
 # YOLOv8.0-p2 head
 head:
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
   - [[-1, 8], 1, Concat, [1]] # cat backbone P3
-  - [-1, 1, SWBlock_spatial_attention, [256]] # 14 (x8-small)
+  - [-1, 1, SWBlock, [128]] # 13 (x8-small)
 
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
   - [[-1, 6], 1, Concat, [1]] # cat backbone P2
-  - [-1, 1, SWBlock_spatial_attention, [256]] # 17 (x4-xsmall)
+  - [-1, 1, SWBlock, [128]] # 16 (x4-xsmall)
 
-  - [[14, 17], 1, Detect, [nc]] # Detect(P2, P3, P4)
+  - [[13, 16], 1, Detect, [nc]] # Detect(P2, P3, P4)

@@ -59,7 +59,8 @@ from .block import (
     ResNetLayer,
     SCDown,
     TorchVision,
-    SWBlock,
+    SWBlock_spatial_attention,
+    SWBlock_channel_attention,
     PoolConv,
 )
 from .conv import (
@@ -90,7 +91,6 @@ from .head import (
     YOLOEDetect,
     YOLOESegment,
     v10Detect,
-    SWDetect,
 )
 from .transformer import (
     AIFI,
@@ -182,7 +182,8 @@ __all__ = (
     "TorchVision",
     "Index",
     "A2C2f",
-    "SWBlock",
+    "SWBlock_spatial_attention",
+    "SWBlock_channel_attention",
     "PoolConv",
     "SWDetect",
 )

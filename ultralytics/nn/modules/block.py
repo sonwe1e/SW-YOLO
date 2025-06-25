@@ -3,7 +3,7 @@
 
 from typing import List, Optional, Tuple
 
-from more_itertools import last
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -53,7 +53,8 @@ __all__ = (
     "PSA",
     "SCDown",
     "TorchVision",
-    "SWBlock",
+    "SWBlock_spatial_attention",
+    "SWBlock_channel_attention",
     "PoolConv",
 )
 
@@ -584,8 +585,113 @@ class SKFusionv2(nn.Module):
         return out
 
 
-class SWBlock(nn.Module):
+class SWBlock_spatial_attention(nn.Module):
     def __init__(self, c1, c2, shortcut=True, e=1.0):
+        """
+        Initialize a CSP bottleneck with 2 convolutions.
+
+        Args:
+            c1 (int): Input channels.
+            c2 (int): Output channels.
+            n (int): Number of Bottleneck blocks.
+            shortcut (bool): Whether to use shortcut connections.
+            g (int): Groups for convolutions.
+            e (float): Expansion ratio.
+        """
+        super().__init__()
+        n = 4
+        self.res = c1 == c2
+        self.c = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)  # optional act=FReLU(c2)
+        self.attn = nn.Sequential(Conv((2 + n) * self.c, 4, 1, 1))
+        self.m = nn.ModuleList(Bottleneckv2(self.c, self.c, shortcut=False, k=[3], e=2.0) for _ in range(n))
+        self.k = nn.parameter.Parameter(torch.tensor([0.6, 0.35, 0.35, 0.6]), requires_grad=True)
+
+    def forward(self, x):
+        """Forward pass through C2f layer."""
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(k * m(y[-1]) for k, m in zip(self.k, self.m))
+
+        # if (
+        #     x[0, :, x.shape[-1] // 2, x.shape[-2] // 2].mean()
+        #     != x[0, :, x.shape[-1] // 2 + 1, x.shape[-2] // 2 + 1].mean()
+        # ) and not self.training:
+        #     import os
+
+        #     os.makedirs("./FeatureMap1/", exist_ok=True)
+        #     _ = len(os.listdir("./FeatureMap1/")) // 8
+        #     torch.save(x, f"./FeatureMap1/{_}_x.pt")
+        #     torch.save(self.cv2(torch.cat(y, 1)), f"./FeatureMap1/{_}_y.pt")
+        #     for i in range(len(y)):
+        #         torch.save(y[i], f"./FeatureMap1/{_}_{i}.pt")
+        # torch.save(
+        #     torch.sigmoid(self.attn(torch.cat(y, 1))), f"./FeatureMap1/{len(os.listdir('./FeatureMap1/'))}.pt"
+        # )
+        return self.cv2(torch.cat(y, 1)) * torch.sigmoid(self.attn(torch.cat(y, 1))).sum(1, keepdim=True)
+
+    def forward_split(self, x):
+        """Forward pass using split() instead of chunk()."""
+        y = self.cv1(x).split((self.c, self.c), 1)
+        y = [y[0], y[1]]
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
+
+
+class SWBlock_channel_attention(nn.Module):
+    def __init__(self, c1, c2, shortcut=True, e=1.0):
+        """
+        Initialize a CSP bottleneck with 2 convolutions.
+
+        Args:
+            c1 (int): Input channels.
+            c2 (int): Output channels.
+            n (int): Number of Bottleneck blocks.
+            shortcut (bool): Whether to use shortcut connections.
+            g (int): Groups for convolutions.
+            e (float): Expansion ratio.
+        """
+        super().__init__()
+        n = self.n = 4
+        self.res = c1 == c2
+        self.c = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2_y1 = Conv((2 + n) * self.c // 2, c2, 1)
+        self.cv2_y2 = Conv((2 + n) * self.c // 2, c2, 7, g=gcd((2 + n) * self.c // 2, c2))
+        self.attn1 = Conv((2 + n) * self.c // 2, 4, 7, g=4)
+        self.attn2 = Conv((2 + n) * self.c // 2, 4, 1)
+        self.m = nn.ModuleList(Bottleneckv2(self.c, self.c, shortcut=False, k=[7], e=2.0) for _ in range(n))
+        self.k = nn.parameter.Parameter(torch.tensor([0.6, 0.35, 0.35, 0.6]), requires_grad=True)
+
+    def forward(self, x):
+        """Forward pass through C2f layer."""
+        y = list(self.cv1(x).chunk(2, 1))
+
+        y.extend(k * m(y[-1]) for k, m in zip(self.k, self.m))
+
+        y_cat = torch.cat(y, 1)
+        B, _, H, W = y_cat.shape
+        num_parts = self.n + 2
+        c_per_part = self.c
+        c_half = c_per_part // 2
+        y_reordered = y_cat.view(B, num_parts, 2, c_half, H, W).permute(0, 2, 1, 3, 4, 5).contiguous()
+
+        y1 = y_reordered[:, 0].view(B, -1, H, W)
+        y2 = y_reordered[:, 1].view(B, -1, H, W)
+        y1 = self.cv2_y1(y1) * torch.sigmoid(self.attn1(y1)).sum(1, keepdim=True)
+        y2 = self.cv2_y2(y2) * torch.sigmoid(self.attn2(y2)).sum(1, keepdim=True)
+        return y1 + y2
+
+    def forward_split(self, x):
+        """Forward pass using split() instead of chunk()."""
+        y = self.cv1(x).split((self.c, self.c), 1)
+        y = [y[0], y[1]]
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
+
+
+class SWBlock_head(nn.Module):
+    def __init__(self, c1, c2, e=1.0):
         """
         Initialize a CSP bottleneck with 2 convolutions.
 
@@ -609,21 +715,7 @@ class SWBlock(nn.Module):
     def forward(self, x):
         """Forward pass through C2f layer."""
         y = list(self.cv1(x).chunk(2, 1))
-
         y.extend(k * m(y[-1]) for k, m in zip(self.k, self.m))
-
-        # if (
-        #     x[0, :, x.shape[-1] // 2, x.shape[-2] // 2].mean()
-        #     != x[0, :, x.shape[-1] // 2 + 1, x.shape[-2] // 2 + 1].mean()
-        # ) and not self.training:
-        #     import os
-
-        #     os.makedirs("./FeatureMap1/", exist_ok=True)
-        #     _ = len(os.listdir("./FeatureMap1/")) // 8
-        #     torch.save(x, f"./FeatureMap1/{_}_x.pt")
-        #     torch.save(self.cv2(torch.cat(y, 1)), f"./FeatureMap1/{_}_y.pt")
-        #     for i in range(len(y)):
-        #         torch.save(y[i], f"./FeatureMap1/{_}_{i}.pt")
         return self.cv2(torch.cat(y, 1))
 
     def forward_split(self, x):
